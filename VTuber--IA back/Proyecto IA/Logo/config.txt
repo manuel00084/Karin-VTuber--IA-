@@ -1,0 +1,9 @@
+CLIENT_ID=dcvfuu8ty7gwksmfpyvi0dt6jjw53h
+CLIENT_SECRET=0lhpyrpdf8xzdesq6rfao1cc5n3mil
+REDIRECT_URI=http://localhost:3000
+CHANNEL=manuel0084
+NICK=manuel0084
+GROQ_API_KEY=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
+TWITCH_TOKEN=
+PTT_KEY=F8
+USER_NAME=Manuel

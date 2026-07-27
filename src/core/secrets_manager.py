@@ -1,16 +1,27 @@
 import os
 import base64
 import hashlib
+import shutil
+import json
+import threading
+import time
+from src.utils.log import error, info, warn
+from src import PROJECT_ROOT
 
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config", "config.txt")
-SECRETS_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "config", "secrets.enc")
+CONFIG_PATH = os.path.join(PROJECT_ROOT, "config", "config.txt")
+SECRETS_PATH = os.path.join(PROJECT_ROOT, "config", "secrets.enc")
 
-ENCRYPTION_PASSWORD = "KarinVTuber2024SecretKey!"
+_DEFAULT_ENCRYPTION_KEY = "KarinVTuber2024SecretKey!"
+ENCRYPTION_PASSWORD = os.environ.get("KARIN_ENCRYPTION_KEY", _DEFAULT_ENCRYPTION_KEY)
+if ENCRYPTION_PASSWORD == _DEFAULT_ENCRYPTION_KEY:
+    warn("[ENCRYPTION] Usando clave por defecto. Define KARIN_ENCRYPTION_KEY en variable de entorno.")
 
 SENSITIVE_KEYS = {
     "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET", "TWITCH_TOKEN",
     "GROQ_API_KEY", "CEREBRAS_API_KEY", "GOOGLE_STUDIO_API_KEY",
-    "FISH_API_KEY",
+    "FISH_API_KEY", "LOCAL_AI_API_KEY",
+    "OBS_PASSWORD",
+    "DISCORD_BOT_TOKEN",
 }
 
 
@@ -47,6 +58,15 @@ def _save_secrets(secrets):
     encoded = base64.b64encode(encrypted).decode()
     with open(SECRETS_PATH, "w", encoding="utf-8") as f:
         f.write(encoded)
+
+def get_secret(key_name):
+    secrets = _load_secrets()
+    return secrets.get(key_name)
+
+def set_secret(key_name, value):
+    secrets = _load_secrets()
+    secrets[key_name] = value
+    _save_secrets(secrets)
 
 def clear_secret(key_name):
     secrets = _load_secrets()
@@ -86,6 +106,7 @@ def load_config():
     return cfg
 
 def save_config(config):
+    _ensure_backup_thread()
     non_sensitive = {}
     sensitive_updates = {}
     for k, v in config.items():
@@ -101,7 +122,7 @@ def save_config(config):
             for k, v in non_sensitive.items():
                 f.write(f"{k}={v}\n")
     except Exception as e:
-        print("Error guardando config:", e)
+        error(f"Error guardando config: {e}")
     secrets = _load_secrets()
     changed = False
     for k, v in sensitive_updates.items():
@@ -139,10 +160,169 @@ def _migrate_plaintext_secrets():
         if migrated:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
-            print(f"[SECURITY] Migradas {sum(1 for l in lines if '=' in l and l.split('=',1)[0].strip() in SENSITIVE_KEYS)} claves de config.txt a secrets.enc")
+            info(f"Migradas {sum(1 for l in lines if '=' in l and l.split('=',1)[0].strip() in SENSITIVE_KEYS)} claves de config.txt a secrets.enc")
         if changed_secrets:
             _save_secrets(secrets)
     except Exception as e:
-        print(f"[SECURITY] Error migrando secretos: {e}")
+        error(f"Error migrando secretos: {e}")
 
 _migrate_plaintext_secrets()
+
+# ── Auto-backup ──────────────────────────────────────────
+
+BACKUP_DIR = os.path.join(PROJECT_ROOT, "backups")
+_CONFIG_BACKUP_INTERVAL = 1800  # 30 min
+
+
+def _backup_file(src, dest_name):
+    if not os.path.exists(src):
+        return
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        dest = os.path.join(BACKUP_DIR, f"{dest_name}.{ts}.bak")
+        shutil.copy2(src, dest)
+        # Keep only last 10 backups per file
+        prefix = f"{dest_name}."
+        backups = sorted(
+            [f for f in os.listdir(BACKUP_DIR) if f.startswith(prefix)],
+            reverse=True,
+        )
+        for old in backups[10:]:
+            try:
+                os.remove(os.path.join(BACKUP_DIR, old))
+            except Exception:
+                pass
+    except Exception as e:
+        error(f"Backup failed for {dest_name}: {e}")
+
+
+def do_backup():
+    _backup_file(CONFIG_PATH, "config")
+    _backup_file(SECRETS_PATH, "secrets")
+    mem_file = os.path.join(PROJECT_ROOT, "data", "memory.json")
+    _backup_file(mem_file, "memory")
+    vec_file = os.path.join(PROJECT_ROOT, "data", "vector_memory_fallback.json")
+    _backup_file(vec_file, "vector_memory")
+    info("✅ Backup automático completado")
+
+
+def _backup_loop():
+    while True:
+        time.sleep(_CONFIG_BACKUP_INTERVAL)
+        do_backup()
+
+
+_backup_started = False
+
+def _ensure_backup_thread():
+    global _backup_started
+    if not _backup_started:
+        _backup_started = True
+        t = threading.Thread(target=_backup_loop, daemon=True)
+        t.start()
+
+# ── Profiles ──────────────────────────────────────────
+
+PROFILES_DIR = os.path.join(PROJECT_ROOT, "config", "profiles")
+
+
+def _ensure_profiles_dir():
+    os.makedirs(PROFILES_DIR, exist_ok=True)
+
+
+def list_profiles():
+    _ensure_profiles_dir()
+    profiles = []
+    for f in os.listdir(PROFILES_DIR):
+        if f.endswith(".json"):
+            profiles.append(f[:-5])
+    return sorted(profiles)
+
+
+def save_profile(name):
+    _ensure_profiles_dir()
+    cfg = _load_config()
+    secrets = _load_secrets()
+    profile = {"config": cfg, "secrets": _encrypt_secrets_for_export(secrets)}
+    path = os.path.join(PROFILES_DIR, f"{name}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(profile, f, ensure_ascii=False, indent=2)
+    info(f"✅ Perfil '{name}' guardado")
+
+
+def load_profile(name):
+    path = os.path.join(PROFILES_DIR, f"{name}.json")
+    if not os.path.exists(path):
+        return False
+    with open(path, "r", encoding="utf-8") as f:
+        profile = json.load(f)
+    cfg = profile.get("config", {})
+    secrets = profile.get("secrets", {})
+    # Handle both encrypted and legacy plain-text profiles
+    if isinstance(secrets, dict) and secrets.get("_encrypted"):
+        secrets = _decrypt_secrets_from_export(secrets)
+    # Write config
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        for k, v in cfg.items():
+            f.write(f"{k}={v}\n")
+    # Write secrets
+    _save_secrets(secrets)
+    info(f"✅ Perfil '{name}' cargado")
+    return True
+
+
+def _encrypt_secrets_for_export(secrets):
+    """Encrypt secrets dict for profile export using Fernet."""
+    if not secrets:
+        return {}
+    try:
+        from cryptography.fernet import Fernet
+        fernet = Fernet(_get_key())
+        raw = json.dumps(secrets, ensure_ascii=False)
+        encrypted = fernet.encrypt(raw.encode())
+        return {"_encrypted": True, "data": base64.b64encode(encrypted).decode()}
+    except Exception:
+        # Fallback: store as plain (legacy compatibility)
+        return secrets
+
+
+def _decrypt_secrets_from_export(encrypted_obj):
+    """Decrypt secrets dict from profile export."""
+    data_b64 = encrypted_obj.get("data", "")
+    if not data_b64:
+        return {}
+    try:
+        from cryptography.fernet import Fernet
+        fernet = Fernet(_get_key())
+        decrypted = fernet.decrypt(base64.b64decode(data_b64)).decode()
+        return json.loads(decrypted)
+    except Exception:
+        return {}
+
+
+def delete_profile(name):
+    path = os.path.join(PROFILES_DIR, f"{name}.json")
+    if os.path.exists(path):
+        os.remove(path)
+        return True
+    return False
+
+
+def export_profile(name, export_path):
+    _ensure_profiles_dir()
+    src = os.path.join(PROFILES_DIR, f"{name}.json")
+    if os.path.exists(src):
+        shutil.copy2(src, export_path)
+        return True
+    return False
+
+
+def import_profile(import_path):
+    _ensure_profiles_dir()
+    if not os.path.exists(import_path):
+        return None
+    base = os.path.splitext(os.path.basename(import_path))[0]
+    dest = os.path.join(PROFILES_DIR, f"{base}.json")
+    shutil.copy2(import_path, dest)
+    return base

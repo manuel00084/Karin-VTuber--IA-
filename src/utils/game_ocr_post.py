@@ -233,7 +233,7 @@ def corregir_texto_juego(texto):
     for pat, rep in PATRONES_PALABRAS:
         try:
             t = re.sub(pat, rep, t, flags=re.IGNORECASE)
-        except:
+        except Exception:
             pass
     t = re.sub(r'\s+', ' ', t).strip()
     return t

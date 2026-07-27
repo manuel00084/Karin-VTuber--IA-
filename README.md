@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/status-beta-orange">
   <img src="https://img.shields.io/badge/version-v0.9.0-blue">
   <img src="https://img.shields.io/badge/python-3.10+-green">
-  <img src="https://img.shields.io/badge/license Apache 2.0purple">
+  <img src="https://img.shields.io/badge/license-MIT-purple">
 </p>
 
 ---
@@ -37,12 +37,15 @@ Karin VTuber -IA- es un proyecto experimental de VTuber con inteligencia artific
 El proyecto combina múltiples tecnologías modernas como:
 
 * OpenCV
-* EasyOCR
+* EasyOCR / Tesseract
 * Groq Vision
-* Cerebras
+* Cerebras / Groq / Local AI (Ollama, LM Studio)
 * edge-tts
 * Vosk
 * customtkinter
+* three.js + three-vrm (visor VRM 3D embebido)
+* Live2D / PNG Tuber
+* aiohttp (servidor visor local)
 * Sistemas de reglas contextuales
 
 Todo enfocado en crear una VTuber IA modular y extensible.
@@ -50,6 +53,16 @@ Todo enfocado en crear una VTuber IA modular y extensible.
 ---
 
 # ✨ Características Principales
+
+## 🎭 Visor Avatar Embebido
+
+Renderiza tu VTuber directamente en el navegador (localhost:18080) sin software externo:
+
+* **VRM 3D** — modelo 3D con tracking facial, labial y rotación de cabeza vía WebSocket
+* **Live2D** — sprite animado con PixiJS, tracking vía WebSocket
+* **PNG Tuber** — video HTML5 con efecto boca abierta
+* **Drag & Drop** — carga modelos VRM/GLB arrastrándolos al navegador
+* **Tracking** — cámara (MediaPipe), teclado, audio (micrófono), gamepad
 
 ## 🎮 Comentarista IA Gamer
 
@@ -91,6 +104,8 @@ Integración con modelos IA para generar:
   https://www.cerebras.ai
 * Groq
   https://console.groq.com/keys
+* Local AI (Ollama, LM Studio, cualquier endpoint compatible con OpenAI)
+  Sin API key requerida — corre modelos localmente
 ---
 
 ## 🎤 Audio y Voz
@@ -102,6 +117,7 @@ Sistema completo de entrada y salida de audio:
 * reproducción MP3
 * Vosk Speech-To-Text
 * sounddevice
+* Detección de voz y silencio en tiempo real
 
 ---
 
@@ -127,78 +143,86 @@ Sistema completo de entrada y salida de audio:
 # 🧱 Arquitectura del Proyecto
 
 ```text
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         KARIN VTUBER -IA-  v0.9.0-beta                      │
-│                         Asistente VTuber con IA                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                    ┌─────────────────┴─────────────────┐
-                    │               UI                   │
-                    │         (customtkinter)            │
-                    │   7 pestañas + sidebar             │
-                    └─────────────────┬─────────────────┘
-                                      │
-            ┌─────────────────────────┼─────────────────────────┐
-            ▼                         ▼                         ▼
-   ┌────────────────┐      ┌──────────────────┐      ┌──────────────────┐
-   │    TWITCH      │      │   CORE / SEGURIDAD│      │     AUDIO        │
-   │                │      │                   │      │                  │
-   │  • OAuth2      │      │  config.txt       │      │  edge-tts (TTS)  │
-   │  • !comandos   │      │  (no sensible)    │      │  sounddevice     │
-   │  • Chat IA     │      │                   │      │  ecualizador EQ  │
-   │  • Detectar    │      │  secrets.enc      │      │  Vosk (STT)      │
-   │    juego       │      │  (Fernet AES)     │      │  play_file(MP3)  │
-   └────────┬───────┘      └────────┬──────────┘      └────────┬─────────┘
-            │                      │                          │
-            └──────────────────────┼──────────────────────────┘
-                                   ▼
-                    ┌─────────────────────────────┐
-                    │         COMENTARISTA         │
-                    │   (3 modos de análisis)      │
-                    └─────────────────────────────┘
-                                   │
-              ┌────────────────────┼────────────────────┐
-              ▼                    ▼                    ▼
-   ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-   │  OCR            │  │ OpenCV+OCR+IA   │  │ Groq Vision     │
-   │  (Solo Lectura) │  │ (Recomendado)   │  │ (Máxima Exp)    │
-   │                 │  │                 │  │                 │
-   │ EasyOCR → TTS   │  │ EasyOCR → TTS   │  │ Captura →       │
-   │ (sin análisis)  │  │ + Motion        │  │ base64 →        │
-   │                 │  │ + Color         │  │ Groq Vision API │
-   │                 │  │ + Background    │  │ → TTS           │
-   │                 │  │ + Cerebras/Groq │  │                 │
-   │                 │  │ + Prompts       │  │                 │
-   └─────────────────┘  └─────────────────┘  └─────────────────┘
-                                   │
-                    ┌──────────────┴──────────────┐
-                    ▼                             ▼
-           ┌──────────────────┐        ┌──────────────────┐
-           │  SENSORES OPENCV │        │  IA (Cerebras)   │
-           │                  │        │                  │
-           │  • Tesseract OCR │        │  ask_cerebras()  │
-           │  • Motion Detect │        │  + prompt perso- │
-           │  • Color HSV     │        │  nalidad         │
-           │  • Background    │        │  → comentario    │
-           │    Subtraction   │        │  natural         │
-           └────────┬─────────┘        └────────┬─────────┘
-                    ▼                          ▼
-           ┌────────────────────────────────────────┐
-           │         SISTEMA DE REGLAS              │
-           │                                        │
-           │  1. Keywords OCR → alerta inmediata    │
-           │  2. Background + rojo → combate        │
-           │  3. Objetos → comentario contextual    │
-           │  4. Colores → ambientación             │
-           │  5. Texto detectado → leer directamente│
-           │  6. Color dominante → fallback         │
-           └────────────────┬───────────────────────┘
-                            ▼
-                   ┌────────────────┐
-                   │  TTS (voz)     │
-                   │  edge-tts      │
-                   │  + ecualizador │
-                   └────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         KARIN VTUBER -IA-  v0.9.0-beta                       │
+│                         Asistente VTuber con IA                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                       │
+                     ┌─────────────────┴─────────────────┐
+                     │               UI                    │
+                     │         (customtkinter)             │
+                     │   7 pestañas + sidebar              │
+                     └─────────────────┬──────────────────┘
+                                       │
+            ┌──────────────────────────┼──────────────────────────┐
+            ▼                          ▼                          ▼
+   ┌──────────────────┐     ┌───────────────────┐     ┌──────────────────┐
+   │    TWITCH        │     │   CORE / SEGURIDAD │     │     AUDIO        │
+   │                  │     │                    │     │                  │
+   │  • OAuth2        │     │  config.txt        │     │  edge-tts (TTS)  │
+   │  • !comandos     │     │  (no sensible)     │     │  sounddevice     │
+   │  • Chat IA       │     │                    │     │  ecualizador EQ  │
+   │  • Detectar      │     │  secrets.enc       │     │  Vosk (STT)      │
+   │    juego         │     │  (Fernet AES)      │     │  play_file(MP3)  │
+   └────────┬─────────┘     └────────┬───────────┘     └────────┬─────────┘
+            │                       │                          │
+            └───────────────────────┼──────────────────────────┘
+                                    ▼
+                     ┌──────────────────────────────┐
+                     │         COMENTARISTA          │
+                     │   (3 modos de análisis)       │
+                     └──────────────────────────────┘
+                                    │
+              ┌─────────────────────┼─────────────────────┐
+              ▼                     ▼                     ▼
+   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+   │  OCR             │  │ OpenCV+OCR+IA    │  │ Groq Vision      │
+   │  (Solo Lectura)  │  │ (Recomendado)    │  │ (Máxima Exp)     │
+   │                  │  │                  │  │                  │
+   │ EasyOCR → TTS    │  │ EasyOCR → TTS    │  │ Captura →        │
+   │ (sin análisis)   │  │ + Motion         │  │ base64 →         │
+   │                  │  │ + Color          │  │ Groq Vision API  │
+   │                  │  │ + Background     │  │ → TTS            │
+   │                  │  │ + Cerebras/Groq/ │  │                  │
+   │                  │  │   Local AI       │  │                  │
+   │                  │  │ + Prompts        │  │                  │
+   └──────────────────┘  └──────────────────┘  └──────────────────┘
+                                    │
+                     ┌──────────────┴──────────────┐
+                     ▼                             ▼
+            ┌──────────────────┐        ┌──────────────────────┐
+            │  SENSORES OPENCV │        │  IA (Cerebras/Groq/  │
+            │                  │        │     Local AI)         │
+            │  • Tesseract OCR │        │                      │
+            │  • Motion Detect │        │  ask_*()             │
+            │  • Color HSV     │        │  + prompt personalida│
+            │  • Background    │        │  → comentario        │
+            │    Subtraction   │        │  natural             │
+            └────────┬─────────┘        └──────────┬───────────┘
+                     ▼                             ▼
+            ┌──────────────────────────────────────────────┐
+            │         SISTEMA DE REGLAS                    │
+            │                                              │
+            │  1. Keywords OCR → alerta inmediata          │
+            │  2. Background + rojo → combate              │
+            │  3. Objetos → comentario contextual          │
+            │  4. Colores → ambientación                   │
+            │  5. Texto detectado → leer directamente      │
+            │  6. Color dominante → fallback               │
+            └──────────────────────┬───────────────────────┘
+                                  │
+                  ┌───────────────┴────────────────┐
+                  ▼                                 ▼
+         ┌──────────────────┐          ┌─────────────────────────┐
+         │  TTS (voz)       │          │  AVATAR (visor web)     │
+         │  edge-tts        │          │                         │
+         │  + ecualizador   │          │  • VRM 3D (three.js)    │
+         └──────────────────┘          │  • Live2D (PixiJS)      │
+                                       │  • PNG Tuber (video)    │
+                                       │  • Face/Keyboard/Audio  │
+                                       │  • WebSocket tracking   │
+                                       │  • aiohttp :18080       │
+                                       └─────────────────────────┘
 ```
 
 ---
@@ -227,18 +251,21 @@ La interfaz principal está desarrollada con:
 
 # 🧩 Tecnologías Utilizadas
 
-| Área              | Tecnología          |
-| ----------------- | ------------------- |
-| UI                | customtkinter       |
-| OCR               | EasyOCR / Tesseract |
-| Visión            | OpenCV              |
-| Vision AI         | Groq Vision         |
-| IA Conversacional | Cerebras / Groq     |
-| TTS               | edge-tts            |
-| STT               | Vosk                |
-| Audio             | sounddevice         |
-| Seguridad         | Fernet AES          |
-| Streaming         | Twitch API          |
+| Área               | Tecnología                 |
+| ------------------ | -------------------------- |
+| UI                 | customtkinter              |
+| OCR                | EasyOCR / Tesseract        |
+| Visión             | OpenCV                     |
+| Vision AI          | Groq Vision                |
+| IA Conversacional  | Cerebras / Groq / Local AI |
+| TTS                | edge-tts                   |
+| STT                | Vosk                       |
+| Audio              | sounddevice                |
+| Seguridad          | Fernet AES                 |
+| Streaming          | Twitch API                 |
+| Avatar VRM 3D      | three.js + three-vrm       |
+| Avatar Live2D/PNG  | PixiJS / HTML5 video       |
+| Servidor visor     | aiohttp + WebSocket        |
 
 ---
 
@@ -329,7 +356,20 @@ Karin-VTuber--IA-
 ├── ocr/
 ├── twitch/
 ├── vision/
-├── ui/
+├── src/
+│   ├── avatar/
+│   │   ├── viewer/          ← visor web (server.py, index.html, js/)
+│   │   ├── viewer_controller.py
+│   │   ├── vmagicmirror.py  ← tracking engine (MediaPipe, etc.)
+│   │   └── __init__.py
+│   ├── ia/
+│   │   ├── ia.py            ← PROVEDORES (incl. Local AI)
+│   │   └── ...
+│   ├── ui/
+│   │   └── main.py          ← UI tabs (Avatar, API Key, etc.)
+│   └── core/
+│       └── secrets_manager.py
+├── ui/                       ← (código legacy)
 ├── secrets/
 ├── main.py
 ├── requirements.txt
@@ -338,22 +378,20 @@ Karin-VTuber--IA-
 
 ---
 
-## 🎭 Integración con Software VTuber
+## 🎭 Render de Avatar
 
 <div align="center">
 
-| Software Compatible | Estado |
-|----------------------|---------|
-| VSeeFace | ✅ Compatible |
-| VNyan    | ✅ Compatible |
-| VTube Studio | ✅ Compatible |
-| VMagicMirror | ✅ Compatible |
-| Otros programas VTuber compatibles | ✅ Funcional |
+| Modo | Estado |
+|------|--------|
+| VRM 3D (three.js + three-vrm) | ✅ Render embebido |
+| Live2D (PixiJS, motion PNG) | ✅ Render embebido |
+| PNG Tuber (video HTML5) | ✅ Render embebido |
 
 </div>
 
 <p align="center">
-  <i>Karin VTuber IA puede integrarse con distintas aplicaciones de VTubing para crear streams interactivos, personajes virtuales y asistentes IA en tiempo real.</i>
+  <i>Karin VTuber IA incluye un visor web propio (localhost:18080) que renderiza el avatar directamente en el navegador, sin necesidad de VMagicMirror ni software externo. El tracking facial (MediaPipe), teclado, audio y gamepad se envían por WebSocket al visor.</i>
 </p>
 
 ---
@@ -385,14 +423,12 @@ Audio virtual estable y flexible para routing de voz y aplicaciones en tiempo re
 ```text
 Karin VTuber IA
         │
-        ▼
-VB-Audio Virtual Cable
+        ├──→ Visor Avatar (localhost:18080)
+        │       VRM 3D / Live2D / PNG Tuber
         │
-        ▼
-VMagicMirror / VTube Studio
+        ├──→ VB-Audio Virtual Cable (audio)
         │
-        ▼
-OBS Studio / Streaming
+        └──→ OBS Studio → Streaming
 ```
 
 ---
@@ -424,28 +460,40 @@ Algunas funciones aún están en fase beta. Puede aver errores que se me ayan es
 * ✅ OpenCV funcionando
 * ✅ Vision AI experimental
 * ✅ Comentarista IA
+* ✅ Visor VRM 3D embebido (three.js + three-vrm)
+* ✅ Visor Live2D / PNG Tuber embebido
+* ✅ Local AI (Ollama, LM Studio)
+* ✅ Tracking facial (MediaPipe), teclado, audio, gamepad
 * ⚠️ Optimización pendiente
 * ⚠️ Compatibilidad Linux/Mac parcial
 
 ---
 
-## 🖥️ Wallpapers para PC
+# 🛣️ Roadmap
 
-Fondos optimizados para:
+## v1.0
 
-- 1920x1080 Full HD
-- 2560x1440 QHD
-- 4K Ultra HD
+* [ ] Mejor estabilidad
+* [ ] Optimización OCR
+* [ ] Mejoras de rendimiento
+* [ ] Traductor
+* [ ] Sistema de monetización
+* [ ] Mejor interfaz gráfica
+* [ ] Kalidokit FaceSolver port (visemes, pupil, brow)
+* [ ] Kalidokit HandSolver + PoseSolver (full body tracking)
 
+## Futuro
 
----
-
-## 📱 Wallpapers para Smartphone
-
-Versiones verticales adaptadas para:
-- Android
-- iPhone
-- AMOLED
+* [ ] Memoria conversacional
+* [ ] Integración Twitch avanzada
+* [ ] Soporte Linux
+* [ ] Soporte MacOS
+* [ ] Modo streamer autónomo
+* [ ] IA emocional
+* [ ] Integración multi-modelo
+* [ ] YouTube streaming
+* [ ] Motion PNG tuber (imágenes + JSON)
+* [ ] Mejoras visor VRM (animaciones idle, expresiones)
 
 ---
 
@@ -479,8 +527,17 @@ Este proyecto está bajo licencia Apache 2.0
 
 # ⭐ Objetivo del Proyecto
 
-Karin VTuber -IA- busca explorar el futuro de las compañer@s virtuales para gamers, combinando IA, entretenimiento y asistencia inteligente en una experiencia única y accesible para todos.
-busca explorar el futuro de las VTubers autónomas de nueva generación, combinando modelos de lenguaje, visión por computadora, voz e interacción en tiempo real.
+Karin VTuber -IA- busca explorar el futuro de:
+
+* VTubers autónomas
+* comentaristas IA
+* análisis visual en videojuegos
+* interacción en streaming
+* compañer@s IA en tiempo real
+* convertise entre los mejores
+* Superar Neurosama
+
+Combinando visión computacional, OCR y modelos de lenguaje modernos.
 
 ---
 

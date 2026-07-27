@@ -1,0 +1,7 @@
+{
+  "¿Cuánto?": {"en": "How much?", "ja": "いくら？", "ko": "얼마?", "pt": "Quanto?", "zh": "多少钱？"},
+  "Vendo": {"en": "Selling", "ja": "売ります", "ko": "판매", "pt": "Vendendo", "zh": "出售"},
+  "Compro": {"en": "Buying", "ja": "買います", "ko": "구매", "pt": "Comprando", "zh": "收购"},
+  "Intercambio": {"en": "Trade?", "ja": "交換？", "ko": "교환?", "pt": "Troca?", "zh": "交换？"},
+  "Oferta": {"en": "Offer", "ja": "オファー", "ko": "오퍼", "pt": "Oferta", "zh": "报价"}
+}

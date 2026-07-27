@@ -1,8 +1,9 @@
 import json
 import os
+from src.utils.log import error, debug
+from src import PROJECT_ROOT
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MEMORY_FILE = os.path.join(BASE_DIR, "data", "memoria.json")
+MEMORY_FILE = os.path.join(PROJECT_ROOT, "data", "memoria.json")
 
 MAX_USERS = 200
 MAX_MESSAGES = 10
@@ -15,13 +16,13 @@ def load_memory():
                 json.dump({}, f)
             return {}
         except Exception as e:
-            print("[ERROR] Error creando memoria:", e)
+            error(f"Error creando memoria: {e}")
             return {}
 
     try:
         with open(MEMORY_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except Exception:
         return {}
 
 
@@ -35,7 +36,7 @@ def save_memory(memory):
         os.replace(tmp_file, MEMORY_FILE)
 
     except Exception as e:
-        print("[ERROR] Error guardando memoria:", e)
+        error(f"Error guardando memoria: {e}")
 
 
 # 🧠 detectar info importante
@@ -97,11 +98,11 @@ def update_mood(memory, user, text):
 
 EMOTION_VOICES = {
     0: "es-MX-DaliaNeural",      # neutral
-    1: "es-MX-DaliaNeural",     # happy - use same voice but slower
-    2: "es-MX-LorenaNeural",    # excited - higher pitch
+    1: "es-MX-DaliaNeural",     # happy - same voice, TTS rate/pitch adjusts
+    2: "es-MX-LiaNeural",       # excited - higher energy voice
     3: "es-ES-ElviraNeural",    # angry
     4: "es-MX-DaliaNeural",     # sad - slower
-    5: "es-AR-TomasNeural",    # sick
+    5: "es-AR-EmiliaNeural",    # sick - softer voice
     6: "es-ES-ElviraNeural",     # bored
 }
 
@@ -176,4 +177,4 @@ def clear_memory():
         with open(MEMORY_FILE, "w", encoding="utf-8") as f:
             json.dump({}, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print("[ERROR] Error borrando memoria:", e)
+        error(f"Error borrando memoria: {e}")

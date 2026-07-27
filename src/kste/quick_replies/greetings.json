@@ -1,0 +1,9 @@
+{
+  "Hola": {"en": "Hello!", "ja": "こんにちは！", "ko": "안녕!", "pt": "Olá!", "zh": "你好！"},
+  "Buenos días": {"en": "Good morning!", "ja": "おはよう！", "ko": "좋은 아침!", "pt": "Bom dia!", "zh": "早上好！"},
+  "Buenas noches": {"en": "Good night!", "ja": "おやすみ！", "ko": "좋은 밤!", "pt": "Boa noite!", "zh": "晚安！"},
+  "¿Qué tal?": {"en": "How's it going?", "ja": "調子どう？", "ko": "어떻지?", "pt": "Como vai?", "zh": "怎么样？"},
+  "Gracias": {"en": "Thanks!", "ja": "ありがとう！", "ko": "고마워!", "pt": "Obrigado!", "zh": "谢谢！"},
+  "De nada": {"en": "You're welcome!", "ja": "どういたしまして！", "ko": "천만에!", "pt": "De nada!", "zh": "不客气！"},
+  "Perdón": {"en": "Sorry!", "ja": "ごめんなさい！", "ko": "미안해요!", "pt": "Desculpe!", "zh": "对不起！"}
+}

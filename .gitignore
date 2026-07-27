@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+logs/
+stderr.txt
+stdout.txt
+*.spec
+backups/
+data/
+
+# Large model weights
+*.pt
+_weights/
+
+# Large ZIP files
+*.zip
+*.rar
+*.7z

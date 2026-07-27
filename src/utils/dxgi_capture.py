@@ -4,6 +4,7 @@ Soporta región (bbox) para capturar solo un área.
 """
 import sys
 from typing import Optional
+from src.utils.log import error
 
 try:
     from PIL import Image
@@ -18,7 +19,7 @@ _log_first = True
 def _log(msg: str):
     global _log_first
     if _log_first:
-        print(f"[CAPTURA] {msg}", file=sys.stderr)
+        error(f"CAPTURA: {msg}")
         _log_first = False
 
 
@@ -127,7 +128,7 @@ def capture_gdi(region=None) -> Optional[Image.Image]:
             img = img.resize((MAX_CAPTURE_W, int(img.size[1] * r)), Image.LANCZOS)
         return img
 
-    except:
+    except Exception:
         return None
 
 
@@ -145,7 +146,7 @@ def capture_mss(region=None) -> Optional[Image.Image]:
             if pil.size[0] > 800:
                 r = MAX_CAPTURE_W / pil.size[0]; pil = pil.resize((MAX_CAPTURE_W, int(pil.size[1] * r)), Image.LANCZOS)
             return pil
-    except:
+    except Exception:
         return None
 
 

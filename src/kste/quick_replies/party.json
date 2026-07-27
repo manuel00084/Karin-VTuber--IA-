@@ -1,0 +1,9 @@
+{
+  "Party?": {"en": "Party?", "ja": "パーティー？", "ko": "파티?", "pt": "Party?", "zh": "组队？"},
+  "¿Vamos?": {"en": "Let's go!", "ja": "行こう！", "ko": "가자!", "pt": "Vamos!", "zh": "走吧！"},
+  "Necesito cura": {"en": "Need heal", "ja": "回復お願い", "ko": "힐 필요", "pt": "Preciso de cura", "zh": "需要治疗"},
+  "Sí": {"en": "Yes", "ja": "はい", "ko": "네", "pt": "Sim", "zh": "是"},
+  "No": {"en": "No", "ja": "いいえ", "ko": "아니요", "pt": "Não", "zh": "不"},
+  "Espera": {"en": "Wait", "ja": "待って", "ko": "기다려", "pt": "Espera", "zh": "等等"},
+  "Voy": {"en": "On my way", "ja": "行くよ", "ko": "가고 있어", "pt": "Vou", "zh": "我在路上"}
+}

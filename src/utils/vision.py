@@ -49,7 +49,7 @@ def detectar_colores_hsv(img_np, rangos=None):
             if pixeles > 1000:
                 resultado[nombre.replace("rojo2", "rojo")] = pixeles
         return resultado
-    except:
+    except Exception:
         return {}
 
 
@@ -62,7 +62,7 @@ def background_subtractor_iniciar():
     try:
         _bg_subs = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=False)
         _bg_subs_activo = True
-    except:
+    except Exception:
         _bg_subs_activo = False
 
 
@@ -77,7 +77,7 @@ def background_subtractor_aplicar(frame_gray):
         cleaned = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
         pct = cv2.countNonZero(cleaned) / cleaned.size
         return {"mask": cleaned, "porcentaje": round(pct * 100, 1), "hay_movimiento": pct > 0.01}
-    except:
+    except Exception:
         return None
 
 

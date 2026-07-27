@@ -13,6 +13,7 @@ import numpy as np
 import threading
 import time
 import hashlib
+from src.utils.log import error, info
 
 _engine = None
 _engine_ready = threading.Event()
@@ -23,9 +24,9 @@ def _init_engine():
     try:
         from rapidocr_onnxruntime import RapidOCR
         _engine = RapidOCR(box_thresh=0.25, text_thresh=0.4, unclip_ratio=2.2)
-        print("RapidOCR listo")
+        info("RapidOCR listo")
     except Exception as e:
-        print(f"RapidOCR no disponible: {e}")
+        error(f"RapidOCR no disponible: {e}")
         _engine = None
     finally:
         _engine_ready.set()

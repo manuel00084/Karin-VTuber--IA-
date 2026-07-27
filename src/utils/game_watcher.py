@@ -2,11 +2,11 @@
 game_watcher.py — Comentarista de juego en tiempo real + Lector de subtítulos
 3 modos: OCR Solo (RapidOCR), OCR + Vision + IA, Vision + OCR
 Prioridad: Chat IA > Bot Chat > OCR > Silencio
-Tecnología: RapidOCR + Karin Vision Lite + IA
+Tecnología: RapidOCR + MobileCLIP-S2 + IA
 """
 import threading, time, random, os, re, base64, io, gc, hashlib, json
-
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+from collections import deque
+from src import PROJECT_ROOT as _PROJECT_ROOT
 
 try:
     from PIL import Image
@@ -17,13 +17,58 @@ except ImportError:
 import cv2
 import numpy as np
 
-WIN_CAPTURE_OK = True
-from src.utils.win_capture import capturar_pantalla
-from src.utils.vision import detectar_movimiento, background_subtractor_iniciar
-from src.bot.twitch_bot import is_chat_ia_activo, is_bot_hablando
+_PLUGIN_MANAGER = None
+
+def _get_plugin_manager():
+    global _PLUGIN_MANAGER
+    if _PLUGIN_MANAGER is None:
+        try:
+            from plugins import PluginManager
+            _PLUGIN_MANAGER = PluginManager()
+        except Exception:
+            _PLUGIN_MANAGER = False
+    return _PLUGIN_MANAGER if _PLUGIN_MANAGER is not False else None
+
+
+def _get_win_capture():
+    from src.utils.win_capture import capturar_pantalla
+    return capturar_pantalla
+
+
+def _get_vision():
+    from src.utils.vision import detectar_movimiento, background_subtractor_iniciar
+    return detectar_movimiento, background_subtractor_iniciar
+
+
+def _get_twitch():
+    from src.bot.twitch_bot import is_chat_ia_activo, is_bot_hablando
+    return is_chat_ia_activo, is_bot_hablando
 
 _ULTIMA_VEZ_IA_CHAT = 0
 _ULTIMA_VEZ_BOT_CHAT = 0
+
+
+def update_ultima_vez_ia_chat():
+    global _ULTIMA_VEZ_IA_CHAT
+    _ULTIMA_VEZ_IA_CHAT = time.time()
+
+
+def update_ultima_vez_bot_chat():
+    global _ULTIMA_VEZ_BOT_CHAT
+    _ULTIMA_VEZ_BOT_CHAT = time.time()
+
+_CLIP = None
+
+
+def _get_clip():
+    global _CLIP
+    if _CLIP is None:
+        try:
+            from src.vision_clip import CLIPSceneAnalyzer
+            _CLIP = CLIPSceneAnalyzer(model_name="mobileclip_s2")
+        except Exception as e:
+            _CLIP = False
+    return _CLIP if _CLIP is not False else None
 
 
 def _detectar_color_dominante_simple(img):
@@ -39,6 +84,65 @@ def _detectar_color_dominante_simple(img):
     if r > 180 and g > 180 and b > 180: return "claro"
     return "neutro"
 
+# ── Listas de frases por defecto ──
+_DEFAULT_ANIMADORAS = [
+    "¡Vamos con todo!",
+    "¡Este juego es increíble!",
+    "¡No te rindas, tú puedes!",
+    "¡Sigue así, lo estás haciendo genial!",
+    "¡Cada intento te acerca al éxito!",
+    "¡Disfruta el proceso, no solo el resultado!",
+    "¡Eres un crack jugando esto!",
+    "¡Qué buena pinta tiene este juego!",
+    "¡Sigue explorando, hay mucho por descubrir!",
+    "¡Tu estilo de juego es único!",
+    "¡No te preocupes por los errores, son parte del aprendizaje!",
+    "¡Así se juega con pasión!",
+    "¡Cada partida es una nueva aventura!",
+    "¡Confía en tus instintos de jugador!",
+    "¡Disfruta cada momento de esta experiencia!",
+]
+_DEFAULT_RECOMENDACION = [
+    "¡Este juego vale totalmente la pena jugarlo!",
+    "Si te gustan los juegos de este género, este te va a encantar.",
+    "Recomendado 100% para fans de este tipo de experiencias.",
+    "Es uno de esos juegos que te atrapan desde el primer minuto.",
+    "Definitivamente vale la pena invertir tiempo en este título.",
+    "La comunidad habla muy bien de este juego, y ahora entiendo por qué.",
+    "Si buscas algo entretenido y bien hecho, este es para ti.",
+    "Los gráficos/mecánicas/historia de este juego son de primera.",
+    "Después de jugar un rato, entiendo por qué tiene tantas buenas reseñas.",
+    "Es de esos juegos que recomendaría a un amigo sin dudar.",
+]
+_DEFAULT_APOYO = [
+    "Tranquilo/a, todos hemos estado ahí.",
+    "Los errores son oportunidades para mejorar.",
+    "No te desanimes, sigue intentándolo.",
+    "Un paso atrás para tomar dos adelante.",
+    "La práctica hace al maestro, sigue practicando.",
+    "Confía en tu proceso de aprendizaje.",
+    "Cada jugador profesional empezó exactamente donde estás ahora.",
+    "Lo importante es seguir adelante y disfrutar el camino.",
+    "Un mal momento no define tu habilidad como jugador.",
+    "Respira profundo y continúa con confianza.",
+]
+_DEFAULT_SALUDOS = [
+    "¡Hola [USUARIO]! Gracias por pasar por el stream, tu presencia hace la diferencia.",
+    "[USUARIO], tu mensaje me hizo sonreír, sigue siendo parte de esta comunidad increíble.",
+    "¡Qué tal [USUARIO]! Tu apoyo significa el mundo para mí mientras juego.",
+    "[USUARIO], gracias por los ánimos, seguimos adelante con energía positiva.",
+    "¡Ey [USUARIO]! Tu participación en el chat hace este stream mucho más divertido.",
+    "[USUARIO], cada mensaje tuyo es como un power-up para mi moral de juego.",
+]
+_DEFAULT_NARRADORA = [
+    "Y así, nuestro héroe avanza sin saber qué destino le espera.",
+    "En un mundo donde los píxeles cobran vida, cada decisión cuenta.",
+    "El viaje del héroe comienza con un solo paso.",
+    "No hay narrador que pueda contar mejor esta historia que tú viviéndola.",
+    "El destino del mundo digital descansa sobre tus hombros.",
+    "La pantalla parpadea, el juego te llama... ¿vas a responder?",
+]
+
 
 class GameWatcher:
     def __init__(self, speak_fn, stop_audio_fn, get_devices_fn, log_fn=None):
@@ -49,7 +153,7 @@ class GameWatcher:
         self._running = False
         self._thread = None
         self._ultimo_hash = ""
-        self._comentarios_vistos = set()
+        self._comentarios_vistos = deque(maxlen=40)
         self.voice = "es-MX-DaliaNeural"
         self.juego_actual = "juego"
         self._modo = ""
@@ -77,7 +181,25 @@ class GameWatcher:
         self._ultimo_evento = ""
         self._eventos_recientes = []
 
+        # Para API de plugins
+        self._ultimo_frame = None
+        self._ultimo_ocr = ""
+        self._screen_size = (0, 0)
 
+        # Plugin hooks
+        self._fps = 0
+
+    def _emit_hook(self, hook_name, *args, **kwargs):
+        pm = _get_plugin_manager()
+        if pm:
+            return pm.emit(hook_name, *args, **kwargs)
+        return []
+
+    def _emit_hook_first(self, hook_name, *args, **kwargs):
+        pm = _get_plugin_manager()
+        if pm:
+            return pm.emit_first(hook_name, *args, **kwargs)
+        return None
 
     def _cargar_prompt(self):
         ruta_prompt = os.path.join(_PROJECT_ROOT, "prompts", "default.txt")
@@ -96,7 +218,7 @@ class GameWatcher:
                                 break
             with open(ruta_prompt, "r", encoding="utf-8") as f:
                 return f.read().strip()
-        except:
+        except Exception:
             return "Eres una VTuber divertida que comenta juegos con energía."
 
     def _cargar_db_juegos(self):
@@ -104,8 +226,8 @@ class GameWatcher:
             if os.path.exists(self._ruta_db):
                 with open(self._ruta_db, "r", encoding="utf-8") as f:
                     return json.load(f)
-        except:
-            pass
+        except Exception:
+            if self.log: self.log("Error cargando DB de juegos")
         return {}
 
     def _guardar_db_juegos(self):
@@ -187,31 +309,26 @@ class GameWatcher:
          ["¿Qué fue eso?", "Algo raro pasó.", "No era mi intención.", "Cosas del juego."]),
     ]
 
-    def _reaccion_predefinida(self, texto, paddle_info=None):
+    def _reaccion_predefinida(self, texto, clip_info=None):
         if texto:
             for patron, respuestas in self.REACCIONES_PREDEFINIDAS:
                 if patron.search(texto):
                     return random.choice(respuestas)
-        if paddle_info:
-            objetos = paddle_info.get("objetos", [])
-            nombres = [o['class_name'] for o in objetos]
-            # Detectar combate: personajes + barras de vida = enemigos
-            hay_vidas = any('vida' in n for n in nombres)
-            hay_personajes = any('personaje' in n for n in nombres)
-            hay_movimiento = any('flujo_' in n or 'shake' in n for n in nombres)
-            hay_enemigos_visuales = (hay_vidas and hay_personajes) or (hay_vidas and hay_movimiento)
-            if hay_enemigos_visuales and self._estado_escena != "combate":
-                self._estado_escena = "combate"
-                self.log(f" Estado detectado: combate por detecciones visuales")
-                return "¡Parece que hay accion!"
-            menus = [n for n in nombres if 'menu' in n]
-            if menus:
+        if clip_info:
+            estado = clip_info.get("estado", "")
+            efecto = clip_info.get("efecto", "")
+            if "combate" in estado or "pelea" in estado:
+                if self._estado_escena != "combate":
+                    self._estado_escena = "combate"
+                    return "¡Parece que hay accion!"
+            if "muerte" in estado or "game over" in estado:
+                return "¡Oh no, nos eliminaron!"
+            if "victoria" in estado:
+                return "¡Lo logramos!"
+            if "menu" in estado:
                 return "Revisando el menú."
-            vidas = [n for n in nombres if 'vida' in n]
-            if len(vidas) > 2 and self._estado_escena != "combate":
-                self._estado_escena = "combate"
-                self.log(f" Estado detectado: combate por barras de vida")
-                return "¡Comienza el combate!"
+            if efecto and "explosion" in efecto:
+                return "¡Explosión! ¿Qué fue eso?"
         return None
 
     _OCR_ESTADO_MAP = [
@@ -222,42 +339,29 @@ class GameWatcher:
         (re.compile(r"(cargando|loading|espera|conectando|pantalla\s*t.tulo)", re.I), "tranquilo"),
     ]
 
-    def _detectar_estado_escena(self, paddle_info, movimiento, ocr_texto=""):
-        if not paddle_info:
+    def _detectar_estado_escena(self, clip_info, movimiento, ocr_texto=""):
+        if not clip_info:
             return self._estado_escena
-        objetos = paddle_info.get("objetos", [])
-        nombres = [o['class_name'] for o in objetos]
 
-        # Dimension: IA investigada tiene prioridad sobre deteccion visual
-        dimension = None
-        if self._game_dimension:
-            dimension = self._game_dimension
-        else:
-            for n in nombres:
-                if n.startswith('dimension_') or n.startswith('pixelart_') or n.startswith('smooth_'):
-                    dimension = n
+        # CLIP tiene prioridad: detecta estado semánticamente
+        estado_clip = clip_info.get("estado", "")
+        escenario = clip_info.get("escenario", "")
+        efecto = clip_info.get("efecto", "")
+
+        if estado_clip:
+            for estado_clave in ("combate", "menu", "dialogo", "exploracion", "muerte", "victoria"):
+                if estado_clave in estado_clip:
+                    self._estado_escena = estado_clave if estado_clave != "muerte" else "combate"
                     break
 
-        hay_vidas = any('vida' in n for n in nombres)
-        hay_ui = any(b in n for n in nombres for b in ('boton', 'menu'))
-        hay_caras = any('cara' in n for n in nombres)
-        hay_movimiento = any(f in n for n in nombres for f in ('flujo_', 'shake', 'scroll'))
-        hay_personajes = any('personaje' in n for n in nombres)
-        hay_actividad = movimiento.get("intensidad", 0) > 10 if movimiento else False
-
-        # Reglas claras por prioridad
-        if hay_ui and not hay_actividad:
-            self._estado_escena = "menu"
-        elif hay_vidas and (hay_movimiento or hay_actividad):
-            self._estado_escena = "combate"
-        elif hay_caras:
-            self._estado_escena = "dialogo"
-        elif hay_personajes and hay_movimiento:
-            self._estado_escena = "exploracion"
-        elif hay_actividad and hay_movimiento:
-            self._estado_escena = "exploracion"
-        else:
-            self._estado_escena = "tranquilo"
+        if not estado_clip:
+            hay_actividad = movimiento.get("intensidad", 0) > 10 if movimiento else False
+            if efecto and hay_actividad:
+                self._estado_escena = "combate"
+            elif escenario and not hay_actividad:
+                self._estado_escena = "exploracion"
+            else:
+                self._estado_escena = "tranquilo"
 
         # OCR refuerza (prioridad sobre vision para casos claros)
         if ocr_texto:
@@ -270,61 +374,50 @@ class GameWatcher:
 
     def _adaptar_prompt_por_estado(self):
         prompts = {
-            "combate": "Estamos en pleno combate. Narra con emocion, grita si pasa algo epico.",
-            "menu": "Estamos en un menu o inventario. Comenta las opciones con calma y naturalidad.",
-            "dialogo": "Escena de dialogo o historia. Comenta los personajes y la trama.",
-            "exploracion": "Estamos explorando. Describe el entorno con curiosidad y asombro.",
-            "tranquilo": "Momento tranquilo. Habla relajadamente, como si descansaras.",
+            "combate": "Combate. Narra con emoción, grita si es épico.",
+            "menu": "Menú/inventario. Habla calmado, comenta opciones.",
+            "dialogo": "Diálogo o historia. Comenta personajes y trama.",
+            "exploracion": "Explorando. Describe con curiosidad.",
+            "tranquilo": "Tranquilo. Habla relajado.",
         }
-        return prompts.get(self._estado_escena, "Comenta lo que esta pasando naturalmente.")
+        return prompts.get(self._estado_escena, "Comenta naturalmente.")
 
     def iniciar(self, voz="es-MX-DaliaNeural", juego="juego", modo="OCR (Solo Lectura)", ia_key="", ia_provider="groq", cooldown=30):
         if self._running:
             self.log("⚠ Ya está corriendo")
             return
         self._running = True
-        self.voice = voz
-        self.juego_actual = juego
-        self._modo = modo
-        self._ia_key = ia_key
-        self._ia_provider = ia_provider
-        self._prompt = self._cargar_prompt()
-        self._cooldown_comentario = cooldown
-        self._game_investigated = False
-        self._game_info = ""
-        self._silent_desde = time.time()
+        try:
+            self.voice = voz
+            self.juego_actual = juego
+            self._modo = modo
+            self._ia_key = ia_key
+            self._ia_provider = ia_provider
+            self._prompt = self._cargar_prompt()
+            self._cooldown_comentario = cooldown
+            self._game_investigated = False
+            self._game_info = ""
+            self._silent_desde = time.time()
 
-        background_subtractor_iniciar()
+            # Notificar a Idle Mode que hay juego activo
+            try:
+                from src.ia.idle_mode import get_idle_mode
+                idle = get_idle_mode()
+                idle.set_game_context(game_name=juego, game_context=modo)
+            except Exception:
+                pass
 
-        if "Groq Vision" in modo:
-            self._ia_provider = "groq"
-            target = self._loop_vision_ia
-        elif "Google Vision" in modo:
-            self._ia_provider = "google_studio"
-            target = self._loop_vision_ia
-        elif "Karin Animadora" in modo:
-            target = self._loop_karin_animadora
-        elif "Karin Vision" in modo:
-            target = self._loop_ia
-        elif "OCR" in modo:
-            target = self._loop_solo_lectura
-        else:
-            target = self._loop_solo_lectura
-
-        self._thread = threading.Thread(target=target, daemon=True)
-        self._thread.start()
-        self.log(f" Comentarista iniciado ({modo})")
-
-    def detener(self):
-        self._running = False
-        self.log(" Comentarista detenido")
+            _get_vision()[1]()
+        except Exception as e:
+            self._running = False
+            self.log(f"⚠ Error iniciando GameWatcher: {e}")
 
     def _puede_hablar(self):
         ahora = time.time()
-        if is_chat_ia_activo():
+        if _get_twitch()[0]():
             self.log(" Bloqueado: Chat IA activo")
             return False
-        if is_bot_hablando():
+        if _get_twitch()[1]():
             self.log(" Bloqueado: Bot hablando")
             return False
         if ahora - _ULTIMA_VEZ_IA_CHAT < 8:
@@ -359,11 +452,22 @@ class GameWatcher:
         if clave in self._comentarios_vistos:
             self.log(" Texto repetido, ignorado")
             return
-        if len(self._comentarios_vistos) > 40:
-            self._comentarios_vistos.pop()
-        self._comentarios_vistos.add(clave)
+        self._comentarios_vistos.append(clave)
         self._ultimo_comentario_hora = time.time()
         self.log(f" {texto}")
+
+        # Redirigir a Idle Mode si está activo
+        try:
+            from src.ia.idle_mode import get_idle_mode
+            idle = get_idle_mode()
+            if idle.is_enabled:
+                idle.set_game_context(game_name=self.juego_actual, game_context=texto)
+                idle.queue_game_comment(texto, "game_motivation")
+                return
+        except Exception as e:
+            if self.log: self.log(f"Error en idle mode: {e}")
+
+        # Fallback: hablar directamente
         _, ia_dev = self.get_devices()
         if ia_dev is not None and ia_dev != -1:
             self.speak(texto, self.voice, ia_dev, volume=2.0)
@@ -385,7 +489,7 @@ class GameWatcher:
 
         # Si no esta en DB, preguntar a IA
         try:
-            from src.ai.ia import ask_ai
+            from src.ia.ia import ask_ai
             prompt_inv = (f"{self._prompt}\n\n"
                           f"El juego actual es '{self.juego_actual}'. "
                           f"Dame SOLO 4 datos separados por |: "
@@ -447,105 +551,36 @@ class GameWatcher:
         except Exception as e:
             return ""
 
-    def _analizar_con_paddle(self, arr):
-        """Analiza la escena usando Karin Vision Lite"""
+    def _analizar_con_clip(self, arr):
+        clip = _get_clip()
+        if clip is None:
+            return {"objetos": [], "resumen": "", "clip_info": {}}
         try:
-            from src.vision_lite.tracking import VisionEngine
+            info = clip.escena_detectada(arr)
+            resumen = clip.generar_resumen(arr)
+            ctx_ia = clip.resumen_para_ia(arr)
+            return {"objetos": [], "resumen": resumen, "clip_info": info, "ctx_ia": ctx_ia}
+        except Exception:
+            return {"objetos": [], "resumen": "", "clip_info": {}}
 
-            bgr_frame = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR) if (len(arr.shape) == 3 and arr.shape[2] == 3) else arr
-            engine = VisionEngine()
-            dets = engine.analyze(bgr_frame, full_scan=True)
-
-            objetos = []
-            for d in dets:
-                objetos.append({
-                    'class_id': hash(d['class_name']) % 1000,
-                    'class_name': d['class_name'],
-                    'confidence': d['confidence'],
-                    'box': d['box']
-                })
-
-            return {"objetos": objetos, "segmentacion": None}
-
-        except Exception as e:
-            print(f"Error en Karin Vision Lite: {e}")
-            return {"objetos": [], "segmentacion": None}
-
-    def _comentar_con_ia(self, texto, movimiento, color_dom, paddle_info=None):
+    def _comentar_con_ia(self, texto, movimiento, color_dom, clip_info=None):
         """Comentario usando IA. Solo comenta si hay juego configurado."""
-        from src.ai.ia import ask_ai
+        from src.ia.ia import ask_ai
 
         if not self.juego_actual or self.juego_actual in ("juego", ""):
             return None
 
         ctx = self._contexto_juego_para_ia()
 
-        if paddle_info and paddle_info.get("objetos"):
-            objs = paddle_info["objetos"]
+        if clip_info and clip_info.get("ctx_ia"):
+            ctx += clip_info["ctx_ia"]
 
-            esc = next((o['class_name'].replace('escenario_','') for o in objs if o['class_name'].startswith('escenario_')), None)
-            if esc:
-                ctx += f"Estamos en un escenario de tipo {esc}. "
-
-            vidas = [o for o in objs if o['class_name'].startswith('vida_')]
-            minimapas = [o for o in objs if o['class_name'] == 'minimapa']
-            patrones = [o for o in objs if o['class_name'] == 'patron_repetido']
-            movs = [o for o in objs if o['class_name'] == 'movimiento']
-            personas = [o for o in objs if o['class_name'] == 'persona']
-            personajes = [o for o in objs if o['class_name'].startswith('personaje_')]
-            botones = [o for o in objs if o['class_name'] == 'boton_ui']
-            menus = [o for o in objs if o['class_name'] == 'menu_ui']
-            caras = [o for o in objs if o['class_name'] == 'cara']
-            brillantes = [o for o in objs if o['class_name'] == 'objeto_brillante']
-            figuras = [o for o in objs if o['class_name'] == 'figura_movimiento']
-            colores = [o for o in objs if 'objeto_' in o['class_name']]
-            flujo_dir = [o for o in objs if o['class_name'].startswith('flujo_')]
-            shake = [o for o in objs if o['class_name'] == 'shake_pantalla']
-            scroll = [o for o in objs if o['class_name'] == 'scroll_pantalla']
-
-            if personajes:
-                nombres = list(set(p['class_name'].replace('personaje_','') for p in personajes))
-                ctx += f"Veo personajes: {', '.join(nombres)}. "
-            if personas:
-                ctx += f"Hay {len(personas)} personas en pantalla. "
-            if figuras or movs:
-                ctx += "Hay movimiento en la escena. "
-            if patrones:
-                ctx += f"Veo {len(patrones)} elementos repetidos. "
-            if vidas:
-                ctx += "Se ven barras de vida. "
-            if minimapas:
-                ctx += "Hay un minimapa en pantalla. "
-            if botones:
-                ctx += "Veo botones en la interfaz. "
-            if menus:
-                ctx += "Hay un menu abierto. "
-            if caras:
-                ctx += "Veo rostros de personajes. "
-            if brillantes:
-                ctx += "Hay objetos brillantes. "
-            if scroll:
-                ctx += "La pantalla se esta desplazando. "
-            if shake:
-                ctx += "La pantalla esta temblando. "
-            if flujo_dir:
-                dirs = [f['class_name'].replace('flujo_','') for f in flujo_dir]
-                ctx += f"La camara se mueve hacia: {', '.join(dirs)}. "
-            if colores:
-                colores_contados = {}
-                for c in colores:
-                    nom = c['class_name'].replace('objeto_','')
-                    colores_contados[nom] = colores_contados.get(nom, 0) + 1
-                partes = [f"{k}={v}" for k,v in sorted(colores_contados.items(), key=lambda x:-x[1])[:4]]
-                ctx += f"Colores predominantes: {', '.join(partes)}. "
+        if clip_info and clip_info.get("resumen"):
+            ctx += f"Resumen visual: {clip_info['resumen']}. "
 
         # Dimension del juego (2D/3D) - IA investigada tiene prioridad
         if self._game_dimension:
             ctx += f"El juego es {self._game_dimension}. "
-        else:
-            dims = [o['class_name'] for o in (paddle_info.get("objetos", []) if paddle_info else []) if 'dimension_' in o['class_name'] or 'pixelart_' in o['class_name'] or 'smooth_' in o['class_name']]
-            if dims:
-                ctx += f"El juego se ve {dims[0].replace('_',' ')}. "
 
         if texto:
             texto_limpio = texto[:120].replace('"', "'")
@@ -568,9 +603,15 @@ class GameWatcher:
                 self._ia_cache[cache_key] = resp
                 if len(self._ia_cache) > self._ia_cache_max:
                     self._ia_cache.pop(next(iter(self._ia_cache)))
+                # Detect emotion from game commentary
+                try:
+                    from src.avatar.karin_mocap import detect_emotion
+                    emotion, bs = detect_emotion(resp)
+                except Exception:
+                    if self.log: self.log("Error detectando emocion en comentario")
                 return resp
-        except:
-            pass
+        except Exception as e:
+            if self.log: self.log(f"Error en comentario IA: {e}")
         return None
 
     def _comentario_sistema(self, texto, color_dom):
@@ -597,7 +638,7 @@ class GameWatcher:
         
         while self._running:
             try:
-                img = capturar_pantalla()
+                img = _get_win_capture()()
                 if img is None:
                     time.sleep(0.5)
                     continue
@@ -622,7 +663,7 @@ class GameWatcher:
                 
                 # Calcular cambio porcentual si tenemos frame anterior
                 cambio_significativo = False
-                if hasattr(self, '_ultimo_frame') and self._ultimo_frame is not None:
+                if self._ultimo_frame is not None:
                     # Redimensionar para comparación más rápida (opcional)
                     small_current = cv2.resize(img_array, (160, 120))
                     small_previous = cv2.resize(self._ultimo_frame, (160, 120))
@@ -637,11 +678,19 @@ class GameWatcher:
                     self._ultimo_frame = img_array.copy()
                     ultimo_hash = hash_actual
                     ultimo_tiempo_ocr = ahora
+
+                    # Hook: frame capturado
+                    self._emit_hook("frame", img_array, 0.0)
                     
                     # Opcional: reducir resolución antes de OCR para acelerar
                     # img_small = img.resize((int(img.width*0.7), int(img.height*0.7)), Image.LANCZOS)
                     # texto = self._ocr_paddle(img_small)
                     texto = self._ocr_paddle(img)
+                    self._ultimo_ocr = texto or ""
+                    
+                    # Hook: OCR detectado
+                    if texto:
+                        self._emit_hook("ocr", texto, img_array)
                     
                     if texto:
                         prefijos = [
@@ -651,7 +700,8 @@ class GameWatcher:
                         self._hablar(f"{random.choice(prefijos)} {texto}")
                 
                 time.sleep(0.2)  # Espera activa baja para respuesta razonable
-                gc.collect()
+                if int(time.time()) % 30 == 0:
+                    gc.collect()
             except Exception as e:
                 self.log(f" Error: {e}")
                 time.sleep(1)
@@ -667,7 +717,7 @@ class GameWatcher:
         self._investigar_juego()
         while self._running:
             try:
-                img = capturar_pantalla()
+                img = _get_win_capture()()
                 if img is None:
                     time.sleep(0.5)
                     continue
@@ -675,7 +725,10 @@ class GameWatcher:
                 gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
                 ahora = time.time()
                 texto = ""
-                
+
+                # Hook: frame capturado (solo notificar si hay cambio)
+                self._emit_hook("frame", arr, 0.0)
+
                 # Determinar si necesitamos ejecutar OCR nuevo o podemos reutilizar
                 hacer_ocr_nuevo = False
                 reutilizar_ocr = False
@@ -685,7 +738,7 @@ class GameWatcher:
                     hacer_ocr_nuevo = True
                 # Si ha pasado el mínimo, verificar cambio de escena
                 elif ahora - ultimo_ocr >= intervalo_ocr_min:
-                    movimiento = detectar_movimiento(arr, frame_anterior)
+                    movimiento = _get_vision()[0](arr, frame_anterior)
                     # Si hay movimiento significativo o es el primer frame, hacer OCR nuevo
                     if movimiento["hay"] or frame_anterior is None:
                         hacer_ocr_nuevo = True
@@ -709,7 +762,10 @@ class GameWatcher:
                         reutilizar_ocr = True
                 
                 # Detectar movimiento ANTES del paralelo (necesario para decidir)
-                mov = detectar_movimiento(arr, frame_anterior)
+                # Reutilizar si ya se calculó arriba
+                if 'movimiento' not in locals():
+                    movimiento = _get_vision()[0](arr, frame_anterior)
+                mov = movimiento
                 cambio = mov["hay"] or frame_anterior is None
 
                 # PARALELO: ejecutar OCR y Vision al mismo tiempo
@@ -731,7 +787,7 @@ class GameWatcher:
 
                 if cambio:
                     def _hacer_vision(arr_p, res):
-                        res["info"] = self._analizar_con_paddle(arr_p)
+                        res["info"] = self._analizar_con_clip(arr_p)
                         res["hecho"] = True
                     hilos.append(threading.Thread(target=_hacer_vision, args=(arr, resultado_vision)))
                 else:
@@ -747,15 +803,22 @@ class GameWatcher:
                     h.join(timeout=15)
 
                 texto = resultado_ocr["texto"]
-                paddle_info = resultado_vision["info"]
+                self._ultimo_ocr = texto or ""
+                clip_info = resultado_vision["info"]
+
+                # Hook: OCR detectado
+                if texto:
+                    self._emit_hook("ocr", texto, arr)
+
                 if hacer_ocr_nuevo:
                     ultimo_ocr = ahora
                     ultimo_ocr_texto = texto
                     self._ultimo_frame_ia = arr.copy()
                 frame_anterior = arr
+                self._ultimo_frame = arr.copy()
 
-                # Forzar comentario si hay detecciones visuales (personas, objetos, escenario)
-                hay_detecciones = bool(paddle_info and paddle_info.get("objetos"))
+                # Forzar comentario si CLIP detectó algo
+                hay_detecciones = bool(clip_info and clip_info.get("clip_info"))
 
                 if not cambio and not texto and not hay_detecciones:
                     time.sleep(0.3)
@@ -765,45 +828,48 @@ class GameWatcher:
 
                 # Detectar estado de escena para prompt adaptativo
                 estado_anterior = self._estado_escena
-                self._detectar_estado_escena(paddle_info, mov, ocr_texto=texto)
+                clip_info_data = clip_info.get("clip_info", {}) if clip_info else {}
+                self._detectar_estado_escena(clip_info_data, mov, ocr_texto=texto)
                 if estado_anterior != self._estado_escena:
                     self.log(f" Cambio de estado: {estado_anterior} -> {self._estado_escena}")
 
                 # Verificar reacciones predefinidas PRIMERO (sin IA)
-                comentario = self._reaccion_predefinida(texto, paddle_info)
+                comentario = self._reaccion_predefinida(texto, clip_info_data)
                 if comentario:
                     self.log(f" Reaccion predefinida: {comentario}")
                 else:
                     # Solo IA si no hay reaccion predefinida
-                    comentario = self._comentar_con_ia(texto, mov, color_dom, paddle_info)
+                    comentario = self._comentar_con_ia(texto, mov, color_dom, clip_info)
                     if comentario:
                         self.log(f" IA: {comentario}")
 
                 if not comentario and texto:
                     comentario = self._comentario_sistema(texto, color_dom)
                 if not comentario and hay_detecciones and self.juego_actual not in ("juego", ""):
-                    objetos = paddle_info.get("objetos", [])
-                    if objetos:
-                        tipos = list(set(o['class_name'] for o in objetos[:3]))
-                        comentario = f"Veo {len(objetos)} elementos en pantalla: {', '.join(tipos)}."
+                    resumen = clip_info.get("resumen", "") if clip_info else ""
+                    if resumen:
+                        comentario = f"Veo {resumen}"
                         self.log(f" Fallback vision: {comentario}")
+                # Hook: comentario generado
+                if comentario:
+                    self._emit_hook("commentary", comentario)
+
                 if comentario:
                     self.log(f" Hablando: {comentario[:60]}...")
                     self._hablar(comentario)
                 else:
                     self.log(" Sin comentario para generar")
                 time.sleep(0.5)
-                gc.collect()
+                if int(time.time()) % 30 == 0:
+                    gc.collect()
             except Exception as e:
                 self.log(f" Error IA: {e}")
                 time.sleep(1)
 
     def _loop_karin_animadora(self):
         """Modo especial: OCR + Karin Animadora + IA - Entretenimiento y soporte al streamer"""
-        from src.ai.ia import ask_ai
-        from src.bot.twitch_bot import get_twitch_messages, is_chat_ia_activo
-        import random
-        import os
+        from src.ia.ia import ask_ai
+        from src.bot.twitch_bot import get_twitch_messages
         
         ultimo_ocr = 0
         intervalo_ocr_min = 3.0   # Mínimo 3 segundos entre OCR
@@ -827,8 +893,7 @@ class GameWatcher:
         self._pool_narradora = []
         
         try:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            animadora_file = os.path.join(base_dir, "data", "karin_animadora.txt")
+            animadora_file = os.path.join(_PROJECT_ROOT, "data", "karin_animadora.txt")
             
             if os.path.exists(animadora_file):
                 with open(animadora_file, 'r', encoding='utf-8') as f:
@@ -871,189 +936,29 @@ class GameWatcher:
                                  
                 # Si no se cargaron frases, usar valores por defecto
                 if not self.frases_animadoras:
-                    self.frases_animadoras = [
-                        "¡Vamos con todo!",
-                        "¡Este juego es increíble!",
-                        "¡No te rindas, tú puedes!",
-                        "¡Sigue así, lo estás haciendo genial!",
-                        "¡Cada intento te acerca al éxito!",
-                        "¡Disfruta el proceso, no solo el resultado!",
-                        "¡Eres un crack jugando esto!",
-                        "¡Qué buena pinta tiene este juego!",
-                        "¡Sigue explorando, hay mucho por descubrir!",
-                        "¡Tu estilo de juego es único!",
-                        "¡No te preocupes por los errores, son parte del aprendizaje!",
-                        "¡Así se juega con pasión!",
-                        "¡Cada partida es una nueva aventura!",
-                        "¡Confía en tus instintos de jugador!",
-                        "¡Disfruta cada momento de esta experiencia!",
-                    ]
-                    
+                    self.frases_animadoras = _DEFAULT_ANIMADORAS.copy()
                 if not self.frases_recomendacion:
-                    self.frases_recomendacion = [
-                        "¡Este juego vale totalmente la pena jugarlo!",
-                        "Si te gustan los juegos de este género, este te va a encantar.",
-                        "Recomendado 100% para fans de este tipo de experiencias.",
-                        "Es uno de esos juegos que te atrapan desde el primer minuto.",
-                        "Definitivamente vale la pena invertir tiempo en este título.",
-                        "La comunidad habla muy bien de este juego, y ahora entiendo por qué.",
-                        "Si buscas algo entretenido y bien hecho, este es para ti.",
-                        "Los gráficos/mecánicas/historia de este juego son de primera.",
-                        "Después de jugar un rato, entiendo por qué tiene tantas buenas reseñas.",
-                        "Es de esos juegos que recomendaría a un amigo sin dudar.",
-                    ]
-                    
+                    self.frases_recomendacion = _DEFAULT_RECOMENDACION.copy()
                 if not self.frases_apoyo:
-                    self.frases_apoyo = [
-                        "Tranquilo/a, todos hemos estado ahí.",
-                        "Los errores son oportunidades para mejorar.",
-                        "No te desanimes, sigue intentándolo.",
-                        "Un paso atrás para tomar dos adelante.",
-                        "La práctica hace al maestro, sigue practicando.",
-                        "Confía en tu proceso de aprendizaje.",
-                        "Cada jugador profesional empezó exactamente donde estás ahora.",
-                        "Lo importante es seguir adelante y disfrutar el camino.",
-                        "Un mal momento no define tu habilidad como jugador.",
-                        "Respira profundo y continúa con confianza.",
-                    ]
-                    
+                    self.frases_apoyo = _DEFAULT_APOYO.copy()
                 if not self.frases_saludos:
-                    self.frases_saludos = [
-                        "¡Hola [USUARIO]! Gracias por pasar por el stream, tu presencia hace la diferencia.",
-                        "[USUARIO], tu mensaje me hizo sonreír, sigue siendo parte de esta comunidad increíble.",
-                        "¡Qué tal [USUARIO]! Tu apoyo significa el mundo para mí mientras juego.",
-                        "[USUARIO], gracias por los ánimos, seguimos adelante con energía positiva.",
-                        "¡Ey [USUARIO]! Tu participación en el chat hace este stream mucho más divertido.",
-                        "[USUARIO], cada mensaje tuyo es como un power-up para mi moral de juego.",
-                    ]
-                    
+                    self.frases_saludos = _DEFAULT_SALUDOS.copy()
                 if not self.frases_narradora:
-                    self.frases_narradora = [
-                        "Y así, nuestro héroe avanza sin saber qué destino le espera.",
-                        "En un mundo donde los píxeles cobran vida, cada decisión cuenta.",
-                        "El viaje del héroe comienza con un solo paso.",
-                        "No hay narrador que pueda contar mejor esta historia que tú viviéndola.",
-                        "El destino del mundo digital descansa sobre tus hombros.",
-                        "La pantalla parpadea, el juego te llama... ¿vas a responder?",
-                    ]
+                    self.frases_narradora = _DEFAULT_NARRADORA.copy()
             else:
                 # Archivo no existe, usar valores por defecto
-                self.frases_animadoras = [
-                    "¡Vamos con todo!",
-                    "¡Este juego es increíble!",
-                    "¡No te rindas, tú puedes!",
-                    "¡Sigue así, lo estás haciendo genial!",
-                    "¡Cada intento te acerca al éxito!",
-                    "¡Disfruta el proceso, no solo el resultado!",
-                    "¡Eres un crack jugando esto!",
-                    "¡Qué buena pinta tiene este juego!",
-                    "¡Sigue explorando, hay mucho por descubrir!",
-                    "¡Tu estilo de juego es único!",
-                    "¡No te preocupes por los errores, son parte del aprendizaje!",
-                    "¡Así se juega con pasión!",
-                    "¡Cada partida es una nueva aventura!",
-                    "¡Confía en tus instintos de jugador!",
-                    "¡Disfruta cada momento de esta experiencia!",
-                ]
-                
-                self.frases_recomendacion = [
-                    "¡Este juego vale totalmente la pena jugarlo!",
-                    "Si te gustan los juegos de este género, este te va a encantar.",
-                    "Recomendado 100% para fans de este tipo de experiencias.",
-                    "Es uno de esos juegos que te atrapan desde el primer minuto.",
-                    "Definitivamente vale la pena invertir tiempo en este título.",
-                    "La comunidad habla muy bien de este juego, y ahora entiendo por qué.",
-                    "Si buscas algo entretenido y bien hecho, este es para ti.",
-                    "Los gráficos/mecánicas/historia de este juego son de primera.",
-                    "Después de jugar un rato, entiendo por qué tiene tantas buenas reseñas.",
-                    "Es de esos juegos que recomendaría a un amigo sin dudar.",
-                ]
-                
-                self.frases_apoyo = [
-                    "Tranquilo/a, todos hemos estado ahí.",
-                    "Los errores son oportunidades para mejorar.",
-                    "No te desanimes, sigue intentándolo.",
-                    "Un paso atrás para tomar dos adelante.",
-                    "La práctica hace al maestro, sigue practicando.",
-                    "Confía en tu proceso de aprendizaje.",
-                    "Cada jugador profesional empezó exactamente donde estás ahora.",
-                    "Lo importante es seguir adelante y disfrutar el camino.",
-                    "Un mal momento no define tu habilidad como jugador.",
-                    "Respira profundo y continúa con confianza.",
-                ]
-                
-                self.frases_saludos = [
-                    "¡Hola [USUARIO]! Gracias por pasar por el stream, tu presencia hace la diferencia.",
-                    "[USUARIO], tu mensaje me hizo sonreír, sigue siendo parte de esta comunidad increíble.",
-                    "¡Qué tal [USUARIO]! Tu apoyo significa el mundo para mí mientras juego.",
-                    "[USUARIO], gracias por los ánimos, seguimos adelante con energía positiva.",
-                    "¡Ey [USUARIO]! Tu participación en el chat hace este stream mucho más divertido.",
-                    "[USUARIO], cada mensaje tuyo es como un power-up para mi moral de juego.",
-                ]
+                self.frases_animadoras = _DEFAULT_ANIMADORAS.copy()
+                self.frases_recomendacion = _DEFAULT_RECOMENDACION.copy()
+                self.frases_apoyo = _DEFAULT_APOYO.copy()
+                self.frases_saludos = _DEFAULT_SALUDOS.copy()
         except Exception as e:
             self.log(f" Error cargando frases de Karin Animadora: {e}")
             # Valores por defecto en caso de error
-            self.frases_animadoras = [
-                "¡Vamos con todo!",
-                "¡Este juego es increíble!",
-                "¡No te rindas, tú puedes!",
-                "¡Sigue así, lo estás haciendo genial!",
-                "¡Cada intento te acerca al éxito!",
-                "¡Disfruta el proceso, no solo el resultado!",
-                "¡Eres un crack jugando esto!",
-                "¡Qué buena pinta tiene este juego!",
-                "¡Sigue explorando, hay mucho por descubrir!",
-                "¡Tu estilo de juego es único!",
-                "¡No te preocupes por los errores, son parte del aprendizaje!",
-                "¡Así se juega con pasión!",
-                "¡Cada partida es una nueva aventura!",
-                "¡Confía en tus instintos de jugador!",
-                "¡Disfruta cada momento de esta experiencia!",
-            ]
-            
-            self.frases_recomendacion = [
-                "¡Este juego vale totalmente la pena jugarlo!",
-                "Si te gustan los juegos de este género, este te va a encantar.",
-                "Recomendado 100% para fans de este tipo de experiencias.",
-                "Es uno de esos juegos que te atrapan desde el primer minuto.",
-                "Definitivamente vale la pena invertir tiempo en este título.",
-                "La comunidad habla muy bien de este juego, y ahora entiendo por qué.",
-                "Si buscas algo entretenido y bien hecho, este es para ti.",
-                "Los gráficos/mecánicas/historia de este juego son de primera.",
-                "Después de jugar un rato, entiendo por qué tiene tantas buenas reseñas.",
-                "Es de esos juegos que recomendaría a un amigo sin dudar.",
-            ]
-            
-            self.frases_apoyo = [
-                "Tranquilo/a, todos hemos estado ahí.",
-                "Los errores son oportunidades para mejorar.",
-                "No te desanimes, sigue intentándolo.",
-                "Un paso atrás para tomar dos adelante.",
-                "La práctica hace al maestro, sigue practicando.",
-                "Confía en tu proceso de aprendizaje.",
-                "Cada jugador profesional empezó exactamente donde estás ahora.",
-                "Lo importante es seguir adelante y disfrutar el camino.",
-                "Un mal momento no define tu habilidad como jugador.",
-                "Respira profundo y continúa con confianza.",
-            ]
-            
-            self.frases_saludos = [
-                "¡Hola [USUARIO]! Gracias por pasar por el stream, tu presencia hace la diferencia.",
-                "[USUARIO], tu mensaje me hizo sonreír, sigue siendo parte de esta comunidad increíble.",
-                "¡Qué tal [USUARIO]! Tu apoyo significa el mundo para mí mientras juego.",
-                "[USUARIO], gracias por los ánimos, seguimos adelante con energía positiva.",
-                "¡Ey [USUARIO]! Tu participación en el chat hace este stream mucho más divertido.",
-                "[USUARIO], cada mensaje tuyo es como un power-up para mi moral de juego.",
-            ]
-            
-            self.frases_narradora = [
-                "Y así, nuestro héroe avanza sin saber qué destino le espera.",
-                "En un mundo donde los píxeles cobran vida, cada decisión cuenta.",
-                "El viaje del héroe comienza con un solo paso.",
-                "No hay narrador que pueda contar mejor esta historia que tú viviéndola.",
-                "El destino del mundo digital descansa sobre tus hombros.",
-                "La pantalla parpadea, el juego te llama... ¿vas a responder?",
-            ]
+            self.frases_animadoras = _DEFAULT_ANIMADORAS.copy()
+            self.frases_recomendacion = _DEFAULT_RECOMENDACION.copy()
+            self.frases_apoyo = _DEFAULT_APOYO.copy()
+            self.frases_saludos = _DEFAULT_SALUDOS.copy()
+            self.frases_narradora = _DEFAULT_NARRADORA.copy()
         
         # Inicializar pools de frases para evitar repeticiones
         self._pool_animadoras = self.frases_animadoras.copy()
@@ -1068,13 +973,18 @@ class GameWatcher:
         # Main loop
         while self._running:
             try:
-                img = capturar_pantalla()
+                img = _get_win_capture()()
                 if img is None:
                     time.sleep(0.5)
                     continue
                     
                 ahora = time.time()
-                
+
+                # Hook: frame capturado
+                arr_img = np.array(img)
+                self._emit_hook("frame", arr_img, 0.0)
+                self._ultimo_frame = arr_img.copy()
+
                 # Ejecutar OCR periódicamente (misma lógica que otros modos)
                 hacer_ocr = False
                 if ahora - ultimo_ocr >= intervalo_ocr_max:
@@ -1087,6 +997,10 @@ class GameWatcher:
                 texto_ocr = ""
                 if hacer_ocr:
                     texto_ocr = self._ocr_paddle(img)
+                    self._ultimo_ocr = texto_ocr or ""
+                    # Hook: OCR detectado
+                    if texto_ocr:
+                        self._emit_hook("ocr", texto_ocr, arr_img)
                     ultimo_ocr = ahora
                     
                     # Log ocasional de OCR para debug
@@ -1128,6 +1042,7 @@ class GameWatcher:
                             )
                             
                             if saludo and len(saludo.strip()) > 0:
+                                self._emit_hook("commentary", saludo)
                                 self._hablar(saludo)
                                 ultimo_saludo = ahora
                                 self.log(f" Saludo al chat: {saludo}")
@@ -1177,8 +1092,7 @@ class GameWatcher:
                             if len(mensaje) > 5:
                                 # Guardar en karin_animadora.txt
                                 try:
-                                    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                                    animadora_file = os.path.join(base_dir, "data", "karin_animadora.txt")
+                                    animadora_file = os.path.join(_PROJECT_ROOT, "data", "karin_animadora.txt")
                                     seccion = secciones_txt[tipo_mensaje]
                                     with open(animadora_file, 'r', encoding='utf-8') as f:
                                         txt = f.read()
@@ -1249,6 +1163,7 @@ class GameWatcher:
                         else:
                             mensaje = f"Mientras juegas {self.juego_actual}, {mensaje.lower()}"
                     
+                    self._emit_hook("commentary", mensaje)
                     self._hablar(mensaje)
                     self.log(f" Mensaje animadora ({tipo_mensaje}): {mensaje}")
                 
@@ -1263,21 +1178,25 @@ class GameWatcher:
                 time.sleep(2)
     def _loop_vision_ia(self):
         """Modo Vision IA: envía captura a la IA para descripción avanzada"""
-        from src.ai.ia import ask_vision
+        from src.ia.ia import ask_vision
         ultimo_ocr = 0
         intervalo_ocr_min = 5.0   # Mínimo 5 segundos entre OCR
         intervalo_ocr_max = 15.0  # Máximo 15 segundos entre OCR forzado
         self._investigar_juego()
         while self._running:
             try:
-                img = capturar_pantalla()
+                img = _get_win_capture()()
                 if img is None:
                     time.sleep(2)
                     continue
                 ahora = time.time()
-                
-                # Hash rápido para detección de cambio de escena
+
                 img_array = np.array(img)
+
+                # Hook: frame capturado
+                self._emit_hook("frame", img_array, 0.0)
+                self._ultimo_frame = img_array.copy()
+
                 hash_actual = hash(img_array.tobytes()[:300])  # Reducido para hash más rápido
                 
                 # Saltar si no ha cambiado mucho y no ha pasado tiempo suficiente
@@ -1308,8 +1227,12 @@ class GameWatcher:
                 texto_ocr = ""
                 if hacer_ocr:
                     texto_ocr = self._ocr_paddle(img)
+                    self._ultimo_ocr = texto_ocr or ""
                     ultimo_ocr = ahora
                     self._hash_antes_ocr = hash_actual
+                    # Hook: OCR detectado
+                    if texto_ocr:
+                        self._emit_hook("ocr", texto_ocr, img_array)
 
                 
                 ocr_ctx = f"Texto en pantalla: '{texto_ocr[:100]}'. " if texto_ocr else ""
@@ -1318,6 +1241,7 @@ class GameWatcher:
                 comentario_rapido = self._reaccion_predefinida(texto_ocr)
                 if comentario_rapido:
                     self.log(f" Reaccion predefinida: {comentario_rapido}")
+                    self._emit_hook("commentary", comentario_rapido)
                     self._hablar(comentario_rapido)
                     self._silent_desde = ahora
                     time.sleep(2)
@@ -1339,14 +1263,13 @@ class GameWatcher:
                 
                 clave = (resp or "").strip().lower()[:80]
                 if resp and clave not in self._comentarios_vistos:
-                    if len(self._comentarios_vistos) > 40:
-                        self._comentarios_vistos.pop()
-                    self._comentarios_vistos.add(clave)
+                    self._comentarios_vistos.append(clave)
+                    self._emit_hook("commentary", resp)
                     self._hablar(resp)
                     self._silent_desde = ahora
                 
                 # Tiempo de espera adaptativo basado en actividad
-                if hacer_ocr or ('resp' in locals() and resp and len(resp) > 10):
+                if hacer_ocr or (resp and len(resp) > 10):
                     time.sleep(2)  # Espera corta si hubo actividad
                 else:
                     time.sleep(5)  # Espera más larga si todo está quieto

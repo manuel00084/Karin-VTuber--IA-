@@ -1,0 +1,15 @@
+{
+    "name": "Music Player",
+    "version": "1.0.0",
+    "api_version": "1",
+    "app_version_min": "0.9.0",
+    "author": "Karin VTuber",
+    "description": "Controla Spotify desde Twitch chat (!play, !skip, !np, !pause) con integración OAuth.",
+    "entry": "main.py",
+    "dependencies": {
+        "pip": ["spotipy>=2.23.0"]
+    },
+    "hooks": ["ui_tab"],
+    "gpu": false,
+    "resources_ram_mb": 5
+}

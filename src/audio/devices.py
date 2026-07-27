@@ -1,4 +1,5 @@
 import sounddevice as sd
+from src.utils.log import error
 
 
 def get_output_devices():
@@ -17,5 +18,5 @@ def get_output_devices():
         return output_devices
 
     except Exception as e:
-        print("Error dispositivos:", e)
+        error(f"Error dispositivos: {e}")
         return [("0 - Default", 0)]

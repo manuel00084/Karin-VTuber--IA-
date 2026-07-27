@@ -4,15 +4,74 @@ import asyncio
 import edge_tts
 import tempfile
 import os
+import time
 
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
+from src.utils.log import error, warn
+from src.utils.optimize import fast_audio_resample, fast_normalize, fast_clip
+from .equalizer import EQ5
 
 audio_queue = queue.Queue()
 
 # Cache de samplerates para evitar sd.query_devices() repetido
 _samplerate_cache = {}
+
+# ── Pitch shift (solo monitor) ──
+_pitch_semitones = 0
+_monitor_device = None
+_eq = EQ5()
+
+def set_pitch(semitones):
+    global _pitch_semitones
+    _pitch_semitones = max(-12, min(12, semitones))
+
+def set_monitor_device(device_id):
+    global _monitor_device
+    _monitor_device = device_id
+
+def set_eq_gain(band, db):
+    _eq.gains[band] = max(-12, min(12, db))
+    _eq._dirty = True
+
+def _pitch_shift(data, semitones):
+    if semitones == 0:
+        return data
+    n = int(len(data) * (2 ** (-semitones / 12)))
+    n = max(1, min(n, len(data) * 4))
+    return np.interp(np.linspace(0, len(data), n), np.arange(len(data)), data).astype(np.float32)
+
+# ── Coordinador de audio ──
+_is_speaking = False
+_active_streams = 0
+_speaking_lock = threading.Lock()
+_last_play_time = 0
+SPEAK_COOLDOWN = 1.5  # segundos mínimo entre reproducciones de distinto origen
+
+
+def is_busy():
+    """Retorna True si hay audio reproduciéndose actualmente."""
+    with _speaking_lock:
+        return _active_streams > 0
+
+
+def was_recently_playing(seconds=2.0):
+    """Retorna True si se reprodujo audio en los últimos X segundos."""
+    with _speaking_lock:
+        return (time.time() - _last_play_time) < seconds
+
+
+def _set_speaking(val):
+    global _is_speaking, _last_play_time, _active_streams
+    with _speaking_lock:
+        if val:
+            _active_streams += 1
+            _is_speaking = True
+            _last_play_time = time.time()
+        else:
+            _active_streams = max(0, _active_streams - 1)
+            _is_speaking = _active_streams > 0
 
 
 def get_device_samplerate(device):
@@ -59,52 +118,44 @@ def detectar_emocion(texto):
 def resample_audio(data, src_rate, dst_rate):
     if src_rate == dst_rate:
         return data
-    from scipy import signal
-    n_out = int(round(len(data) * dst_rate / src_rate))
-    if data.ndim == 1:
-        return signal.resample(data, n_out).astype(np.float32)
-    out = np.zeros((n_out, data.shape[1]), dtype=np.float32)
-    for ch in range(data.shape[1]):
-        out[:, ch] = signal.resample(data[:, ch], n_out).astype(np.float32)
-    return out
+    return fast_audio_resample(data, src_rate, dst_rate)
 
 
 def _play_on_device(data, src_fs, device, volume=1.0):
     """Reproduce audio en un dispositivo (con remuestreo si hace falta)."""
+    _set_speaking(True)
     try:
         d = data.copy()
-        # 1) Normalizar a 85% para dejar margen de amplificación
-        peak = np.max(np.abs(d))
-        if peak > 0:
-            d = d * (0.85 / peak)
-        # 2) Aplicar ganancia de volumen
+        d = fast_normalize(d, 0.85)
         d = d * volume
         dev_rate = get_device_samplerate(device)
-        d = resample_audio(d, src_fs, dev_rate) if src_fs != dev_rate else d
-        # Forzar mono si el audio tiene mas de 1 canal
+        d = fast_audio_resample(d, src_fs, dev_rate) if src_fs != dev_rate else d
         if d.ndim > 1 and d.shape[1] > 1:
             d = np.mean(d, axis=1)
-        # 3) Clip protection final
-        max_val = np.max(np.abs(d))
-        if max_val > 0.99:
-            d = d * (0.99 / max_val)
+        if _pitch_semitones and device == _monitor_device:
+            d = _pitch_shift(d, _pitch_semitones)
+        if device == _monitor_device:
+            d = _eq.process(d)
+        d = fast_clip(d, 0.99)
         try:
             sd.play(d, dev_rate, device=device, blocking=True)
         except Exception as e1:
-            print(f"WARNING Retrying device {device} at 48000Hz: {e1}")
+            warn(f"Retrying device {device} at 48000Hz: {e1}")
             d2 = data.copy()
-            peak2 = np.max(np.abs(d2))
-            if peak2 > 0:
-                d2 = d2 * (0.6 / peak2) * volume
-            d2 = resample_audio(d2, src_fs, 48000)
+            d2 = fast_normalize(d2, 0.6) * volume
+            d2 = fast_audio_resample(d2, src_fs, 48000)
             if d2.ndim > 1 and d2.shape[1] > 1:
                 d2 = np.mean(d2, axis=1)
-            max_val2 = np.max(np.abs(d2))
-            if max_val2 > 0.99:
-                d2 = d2 * (0.99 / max_val2)
+            if _pitch_semitones and device == _monitor_device:
+                d2 = _pitch_shift(d2, _pitch_semitones)
+            if device == _monitor_device:
+                d2 = _eq.process(d2)
+            d2 = fast_clip(d2, 0.99)
             sd.play(d2, 48000, device=device, blocking=True)
     except Exception as e:
-        print(f"ERROR playing in device {device}: {e}")
+        error(f"playing in device {device}: {e}")
+    finally:
+        _set_speaking(False)
 
 
 # ===== WORKER =====
@@ -127,8 +178,10 @@ def audio_worker():
             except RuntimeError:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                loop.run_until_complete(_generar_tts(text, voice, path))
-                loop.close()
+                try:
+                    loop.run_until_complete(_generar_tts(text, voice, path))
+                finally:
+                    loop.close()
 
             try:
                 data, fs = sf.read(path, dtype='float32')
@@ -144,7 +197,7 @@ def audio_worker():
                 for t in threads:
                     t.join()
             except Exception as e:
-                print("ERROR playing audio:", e)
+                error(f"playing audio: {e}")
 
             try:
                 os.remove(path)
@@ -152,7 +205,7 @@ def audio_worker():
                 pass
 
         except Exception as e:
-            print("ERROR Worker error:", e)
+            error(f"Worker error: {e}")
 
 
 def stop_audio():
@@ -160,25 +213,26 @@ def stop_audio():
         sd.stop()
     except Exception:
         pass
+    _set_speaking(False)
 
 
-def speak(text, voice="es-ES-AlvaroNeural", device=2, volume=1.0):
+def speak(text, voice="es-ES-AlvaroNeural", device=None, volume=1.0):
     """device puede ser int (un dispositivo) o lista [dev1, dev2, ...]."""
     try:
         audio_queue.put((text, voice, device, volume))
     except Exception as e:
-        print("ERROR speak:", e)
+        error(f"speak: {e}")
 
 
-def play_file(path, device=2):
+def play_file(path, device=None):
     """Reproduce un archivo de audio (MP3/WAV/OGG) directamente"""
     if not path or not os.path.isfile(path):
-        print(f"ERROR play_file: archivo no encontrado: {path}")
+        error(f"play_file: archivo no encontrado: {path}")
         return
     try:
         data, fs = sf.read(path, dtype='float32')
     except Exception as e:
-        print(f"ERROR play_file sf.read: {e}")
+        error(f"play_file sf.read: {e}")
         try:
             import subprocess
             subprocess.run(
@@ -187,6 +241,6 @@ def play_file(path, device=2):
             )
             return
         except Exception as e2:
-            print(f"ERROR play_file ffplay fallback: {e2}")
+            error(f"play_file ffplay fallback: {e2}")
             return
     _play_on_device(data, fs, device)

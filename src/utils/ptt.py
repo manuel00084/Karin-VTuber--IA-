@@ -1,11 +1,12 @@
 import threading
 import traceback
+from src.utils.log import error
 
 try:
     import keyboard
 except Exception as e:
     keyboard = None
-    print("No se pudo importar 'keyboard':", e)
+    error(f"No se pudo importar 'keyboard': {e}")
 
 
 class PTTManager:
@@ -38,7 +39,10 @@ class PTTManager:
         try:
             self.app.after(0, lambda: self.app.log(text))
         except Exception:
-            print(text)
+            try:
+                error(text)
+            except Exception:
+                pass
 
     def _on_press(self, _event):
         with self._lock:
@@ -70,11 +74,26 @@ class PTTManager:
                 self._log("No se entendio nada")
                 return
             self._log(f"Tu: {text}")
+
+            from src.utils.game_launcher import handle_command
+            game_result = handle_command(text)
+            if game_result:
+                self._log(f"🎮  {game_result}")
+                _, ia_dev = self.get_devices()
+                self.speak(game_result, self.voice, ia_dev, volume=self.volume)
+                return
+
             api_key = self.config.get("CEREBRAS_API_KEY", "")
             if not api_key:
                 self._log("❌  Falta CEREBRAS_API_KEY"); return
             respuesta = self.ask_ai(text, api_key, self.current_prompt(), "cerebras")
             self._log(f"IA: {respuesta}")
+            # Detect emotion from AI response
+            try:
+                from src.avatar.karin_mocap import detect_emotion
+                emotion, bs = detect_emotion(respuesta)
+            except Exception:
+                pass
             _, ia_dev = self.get_devices()
             self.speak(respuesta, self.voice, ia_dev, volume=self.volume)
         except Exception as e:

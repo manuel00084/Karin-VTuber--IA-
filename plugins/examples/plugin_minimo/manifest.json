@@ -1,0 +1,15 @@
+{
+    "name": "Plugin Mínimo",
+    "version": "1.0.0",
+    "api_version": "1",
+    "app_version_min": "0.9.0",
+    "author": "Karin VTuber",
+    "description": "Ejemplo mínimo de plugin. Demuestra hooks, API, UI y configuración.",
+    "entry": "main.py",
+    "dependencies": {
+        "pip": []
+    },
+    "hooks": ["frame", "commentary", "ui_tab"],
+    "gpu": false,
+    "resources_ram_mb": 10
+}

@@ -2,13 +2,14 @@
 oauth_server.py
 """
 import http.server, threading, webbrowser, urllib.parse, requests
+from src.utils.log import error
 
 from src.core.secrets_manager import (
     load_config, save_config
 )
 
 REDIRECT_URI = "http://localhost:3000"
-SCOPES = "chat:read chat:edit user:read:email"
+SCOPES = "chat:read chat:edit user:read:email moderator:read:followers channel:manage:broadcast user:bot channel:bot"
 
 def get_client_id():
     cfg = load_config()
@@ -27,7 +28,7 @@ def _exchange_code(code):
     }, timeout=10)
     data = r.json()
     if "access_token" not in data:
-        print(f"Twitch OAuth error: {data}")
+        error(f"Twitch OAuth error: {data}")
         return None
     return data.get("access_token")
 
